@@ -266,15 +266,33 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
   </div>
 </div>
 
+<!-- Passcode for the shared sheet -->
+<div class="overlay" id="key-ov" hidden>
+  <form class="sheet" id="key-form" autocomplete="off">
+    <h2>Passcode</h2>
+    <p>Enter the team passcode to sync this count with the shared sheet. You only do this once per device.</p>
+    <input class="text" id="key-input" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="Passcode">
+    <div class="actions">
+      <button class="btn" type="button" id="key-cancel">Not now</button>
+      <button class="btn primary grow" type="submit">Save passcode</button>
+    </div>
+  </form>
+</div>
+
 <div class="toast" id="toast" role="status" hidden></div>
 
 <script>
+/* Web app URL of the Apps Script attached to the Google Sheet (see README).
+   Leave empty to keep everything on the device only. */
+const API_URL = '';
+
 (() => {
   const $ = id => document.getElementById(id);
   const listEl = $('list'), searchEl = $('search');
   const items = new Map();   // id -> stored doc
   const queue = {};          // id -> {patch, timer, busy}
-  let store = null;
+  let store = null, storageOk = true;
+  let syncing = false, syncAgain = false, syncTimer = 0, syncNote = '';
   let unnamedOnly = false, loaded = false, draft = null;
 
   /* ---------- helpers ---------- */
@@ -290,6 +308,99 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
   function explain(e, doing) {
     if (e && e.name === 'QuotaExceededError') return 'This device is out of storage. Export, then clear the count from Finish.';
     return "Couldn't " + doing + '. Try again.';
+  }
+
+  /* ---------- sync with the Google Sheet ----------
+     The device stays the working copy, so counting works with no signal. Edits are
+     marked dirty and pushed when the sheet is reachable; everything else is pulled. */
+  const ls = {
+    get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  };
+  async function api(action, body) {
+    const r = await fetch(API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ action, key: ls.get('ih-key', '') }, body)),
+    });
+    const j = await r.json();
+    if (j.error) { const e = new Error(j.message || j.error); e.code = j.error; throw e; }
+    return j;
+  }
+  const pendingCount = () => [...items.values()].filter(i => view(i).dirty).length + ls.get('ih-del', []).length;
+  function showStatus() {
+    const s = $('status');
+    if (!storageOk) s.textContent = 'This browser is blocking storage, so nothing can be saved. Turn off private browsing and reload.';
+    else if (!API_URL) s.textContent = 'Saved on this device, in this browser. Export before you clear it or switch devices.';
+    else s.textContent = syncNote || 'Connecting to the shared sheet…';
+  }
+  function scheduleSync(delay = 800) {
+    if (!API_URL) return;
+    clearTimeout(syncTimer); syncTimer = setTimeout(sync, delay);
+  }
+  async function sync() {
+    if (!API_URL) return;
+    if (syncing) { syncAgain = true; return; }
+    syncing = true;
+    try {
+      await ready;
+      if (pendingCount()) { syncNote = 'Sending changes to the shared sheet…'; showStatus(); }
+
+      for (const id of ls.get('ih-del', [])) {
+        await api('delete', { id });
+        ls.set('ih-del', ls.get('ih-del', []).filter(x => x !== id));
+      }
+
+      for (const it of [...items.values()]) {
+        if (it.dirty === false) continue;
+        const sent = it.updated;
+        const body = { item: { id: it.id, name: it.name || '', qty: Number(it.qty) || 0, created: it.created, updated: it.updated || it.created } };
+        if (!it.up) { body.item.thumb = it.thumb; body.photo = it.full; }
+        const res = await api('upsert', body);
+        const cur = items.get(it.id); if (!cur) continue;
+        const p = { synced: true, up: !!(cur.up || res.hasPhoto) };
+        if (cur.updated === sent) p.dirty = false;
+        await store.update(it.id, p);
+      }
+
+      const remote = (await api('list')).items || [];
+      const gone = new Set(ls.get('ih-del', [])), seen = new Set(), need = [];
+      for (const r of remote) {
+        if (gone.has(r.id)) continue;
+        seen.add(r.id);
+        const l = items.get(r.id);
+        if (!l) {
+          await store.set(r.id, { name: r.name, qty: r.qty, created: r.created, updated: r.updated, thumb: '', full: '', dirty: false, up: !!r.hasPhoto, synced: true });
+          need.push(r.id);
+        } else if (!view(l).dirty) {
+          if ((l.name || '') !== r.name || Number(l.qty) !== r.qty) await store.update(r.id, { name: r.name, qty: r.qty, updated: r.updated });
+          if (!l.thumb && r.hasPhoto) need.push(r.id);
+        }
+      }
+      for (const l of [...items.values()]) if (l.synced && !view(l).dirty && !seen.has(l.id)) await store.del(l.id);
+      for (let i = 0; i < need.length; i += 20) {
+        const thumbs = (await api('thumbs', { ids: need.slice(i, i + 20) })).thumbs || {};
+        for (const id of Object.keys(thumbs)) if (thumbs[id] && items.has(id)) await store.update(id, { thumb: thumbs[id] });
+      }
+      syncNote = 'Synced with the shared sheet at ' + timeOf(Date.now()) + '.';
+    } catch (e) {
+      if (e.code === 'auth') { syncNote = 'Enter the passcode to sync with the shared sheet.'; $('key-ov').hidden = false; $('key-input').focus(); }
+      else {
+        const n = pendingCount();
+        syncNote = "Can't reach the shared sheet. " + (n ? n + (n === 1 ? ' change is' : ' changes are') + ' saved on this device and will send when it reconnects.' : 'Showing the copy saved on this device.');
+      }
+    }
+    syncing = false; showStatus();
+    if (syncAgain) { syncAgain = false; scheduleSync(300); }
+  }
+  $('key-form').addEventListener('submit', e => {
+    e.preventDefault();
+    ls.set('ih-key', $('key-input').value.trim()); $('key-ov').hidden = true; sync();
+  });
+  $('key-cancel').addEventListener('click', () => { $('key-ov').hidden = true; });
+  if (API_URL) {
+    setInterval(() => { if (!document.hidden && $('key-ov').hidden) sync(); }, 20000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+    window.addEventListener('online', () => sync());
   }
 
   /* ---------- fuzzy name search ---------- */
@@ -366,17 +477,13 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
   const ready = store.sub(docs => {
     items.clear(); docs.forEach(d => items.set(d.id, d));
     loaded = true; render();
-  }).then(ok => {
-    $('status').textContent = ok
-      ? 'Saved on this device, in this browser. Export before you clear it or switch devices.'
-      : "This browser is blocking storage, so nothing can be saved. Turn off private browsing and reload.";
-  });
+  }).then(ok => { storageOk = ok; showStatus(); sync(); });
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
   /* Debounced, one-write-at-a-time edits per item. */
   function patch(id, p, delay = 450) {
     const q = queue[id] || (queue[id] = { patch: {}, timer: 0, busy: false });
-    Object.assign(q.patch, p);
+    Object.assign(q.patch, p, { updated: Date.now(), dirty: true });
     clearTimeout(q.timer); q.timer = setTimeout(() => flush(id), delay);
     render();
   }
@@ -386,7 +493,7 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
     const p = q.patch; q.patch = {}; q.busy = true;
     try { await store.update(id, p); }
     catch (e) { toast(explain(e, 'save that change')); }
-    q.busy = false;
+    q.busy = false; scheduleSync();
     if (Object.keys(q.patch).length) flush(id);
   }
   const view = d => (queue[d.id] ? { ...d, ...queue[d.id].patch } : d);
@@ -483,8 +590,10 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
 
   async function removeItem(id) {
     clearTimeout(queue[id] && queue[id].timer); delete queue[id];
-    try { await store.del(id); }
-    catch (e) { toast(explain(e, 'remove that item')); }
+    try {
+      await store.del(id);
+      if (API_URL) { ls.set('ih-del', ls.get('ih-del', []).concat(id)); scheduleSync(100); }
+    } catch (e) { toast(explain(e, 'remove that item')); }
   }
 
   function openViewer(it) {
@@ -492,6 +601,14 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
     img.onerror = () => { img.onerror = null; img.src = it.full || it.thumb || ''; };
     img.src = it.full || it.thumb || '';
     $('view-ov').hidden = false;
+    if (!it.full && it.up && API_URL) {
+      const id = it.id; img.dataset.id = id;
+      api('photo', { id }).then(r => {
+        if (!r.data) return;
+        if (img.dataset.id === id && !$('view-ov').hidden) img.src = r.data;
+        if (items.has(id)) store.update(id, { full: r.data }).catch(() => {});
+      }).catch(() => {});
+    } else img.dataset.id = it.id;
   }
   $('view-close').addEventListener('click', () => { $('view-ov').hidden = true; });
   $('view-ov').addEventListener('click', e => { if (e.target === $('view-ov')) $('view-ov').hidden = true; });
@@ -517,7 +634,7 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
     if (!file) return;
     try {
       const big = shrink(await decode(file), 1024);
-      draft = { big, thumb: shrink(big, 240).toDataURL('image/jpeg', 0.7) };
+      draft = { big, thumb: shrink(big, 200).toDataURL('image/jpeg', 0.6) };
       $('draft-img').src = shrink(big, 900).toDataURL('image/jpeg', 0.8);
       $('draft-qty').value = ''; $('draft-name').value = '';
       $('draft-ov').hidden = false;
@@ -533,8 +650,10 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
     const doc = {
       name: $('draft-name').value.trim(), qty: parseQty($('draft-qty').value) || 0,
       thumb: d.thumb, full: d.big.toDataURL('image/jpeg', 0.78), created: Date.now(),
+      dirty: true, up: false, synced: false,
     };
-    try { await ready; await store.set(newId(), doc); }
+    doc.updated = doc.created;
+    try { await ready; await store.set(newId(), doc); scheduleSync(100); }
     catch (e) { toast(explain(e, 'save that item')); }
   }
   $('draft').addEventListener('submit',e => { e.preventDefault(); saveDraft(); });
@@ -575,13 +694,22 @@ h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   });
   $('fin-clear').addEventListener('click',() => {
-    $('fin-confirm-p').textContent = 'Delete all ' + items.size + ' photos and counts from this device? This cannot be undone.';
+    $('fin-confirm-p').textContent = 'Delete all ' + items.size + ' photos and counts from ' + (API_URL ? 'the shared sheet and every device' : 'this device') + '? This cannot be undone.';
     $('fin-confirm').hidden = false;
   });
   $('fin-no').addEventListener('click', () => { $('fin-confirm').hidden = true; });
   $('fin-yes').addEventListener('click', async () => {
     const btn = $('fin-yes'), list = [...items.values()]; btn.disabled = true;
     let failed = 0;
+    if (API_URL) {
+      btn.textContent = 'Clearing the shared sheet…';
+      try { await api('clear'); ls.set('ih-del', []); }
+      catch (e) {
+        btn.disabled = false; btn.textContent = 'Delete everything';
+        toast("Can't reach the shared sheet, so nothing was cleared. Try again when you have signal.");
+        return;
+      }
+    }
     for (let i = 0; i < list.length; i += 4) {
       btn.textContent = 'Deleting ' + Math.min(i + 4, list.length) + ' of ' + list.length + '…';
       await Promise.all(list.slice(i, i + 4).map(async it => {
