@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Inventory Helper</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: one phone-width column. Sticky header holds totals + search, the list is
+   photo-led rows with a stepper, and a fixed bottom bar keeps the camera one thumb away. */
+:root {
+  --bg: #f1f4f8;
+  --surface: #ffffff;
+  --ink: #121a27;
+  --muted: #5a6577;
+  --line: #d5dbe5;
+  --accent: #1b3fa8;
+  --on-accent: #ffffff;
+  --label: #ffd84a;      /* price-gun label yellow, used only for tag numbers */
+  --on-label: #1a1a12;
+  --danger: #b3261e;
+  --scrim: rgba(12, 18, 28, .55);
+  --font-display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d121a; --surface: #171e2a; --ink: #e8edf5; --muted: #95a1b4; --line: #2b3546;
+    --accent: #86a6ff; --on-accent: #0d121a; --label: #ffd84a; --on-label: #1a1a12;
+    --danger: #ff8f85; --scrim: rgba(0, 0, 0, .65); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d121a; --surface: #171e2a; --ink: #e8edf5; --muted: #95a1b4; --line: #2b3546;
+  --accent: #86a6ff; --on-accent: #0d121a; --label: #ffd84a; --on-label: #1a1a12;
+  --danger: #ff8f85; --scrim: rgba(0, 0, 0, .65); color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 16px/1.4 var(--font-body);
+  padding-inline: 16px;
+  padding-block: 0 calc(112px + env(safe-area-inset-bottom, 0px));
+}
+.wrap { max-width: 680px; margin-inline: auto; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Header */
+header {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  background: var(--bg);
+  display: grid; gap: 10px;
+  padding-block: 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font: 700 28px/1 var(--font-display); letter-spacing: .01em; text-transform: uppercase; margin: 0; }
+.stats { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stats b { color: var(--ink); font-weight: 600; }
+.tools { display: flex; gap: 8px; align-items: center; }
+.search {
+  flex: 1; min-width: 0; height: 44px; padding: 0 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.chip {
+  height: 44px; padding: 0 12px; white-space: nowrap;
+  background: transparent; border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 14px; font-weight: 500;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.status { font-size: 13px; color: var(--muted); }
+
+/* List */
+.list { list-style: none; margin: 0; padding: 12px 0 0; display: grid; gap: 10px; }
+.item {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px;
+}
+.thumb {
+  grid-row: span 2; position: relative; width: 84px; height: 84px; padding: 0;
+  border: 0; border-radius: 6px; overflow: hidden; background: var(--line);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tag {
+  position: absolute; left: 0; top: 0; padding: 1px 6px 2px;
+  background: var(--label); color: var(--on-label);
+  font: 700 15px/1.2 var(--font-display); font-variant-numeric: tabular-nums;
+  border-bottom-right-radius: 6px;
+}
+.name {
+  width: 100%; height: 38px; padding: 0 8px; font-weight: 500;
+  background: transparent; border: 1px solid transparent; border-bottom-color: var(--line); border-radius: 6px;
+}
+.name:focus { border-color: var(--line); background: var(--bg); }
+.name::placeholder, .search::placeholder { color: var(--muted); font-weight: 400; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stepper { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.stepper button {
+  width: 44px; height: 42px; border: 0; background: var(--bg);
+  font: 700 24px/1 var(--font-display);
+}
+.stepper button:active { background: var(--line); }
+.qty {
+  width: 72px; height: 42px; border: 0; border-inline: 1px solid var(--line); background: var(--surface);
+  text-align: center; font: 700 24px/1 var(--font-display); font-variant-numeric: tabular-nums;
+}
+.time { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.del {
+  margin-left: auto; height: 36px; padding: 0 8px; border: 0; background: transparent;
+  font-size: 13px; color: var(--muted); text-decoration: underline; border-radius: 6px;
+}
+.del.armed { color: var(--danger); font-weight: 600; }
+
+.empty { margin-top: 28px; padding: 28px 20px; border: 1px dashed var(--line); border-radius: var(--radius); text-align: center; color: var(--muted); }
+.empty h2 { font: 700 22px/1.1 var(--font-display); text-transform: uppercase; color: var(--ink); margin: 0 0 6px; text-wrap: balance; }
+.empty p { margin: 0 auto; max-width: 36ch; }
+
+/* Bottom bar */
+.bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  background: var(--bg); border-top: 1px solid var(--line);
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+.bar-in { max-width: 680px; margin-inline: auto; display: flex; gap: 8px; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 52px; padding: 0 16px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--surface);
+  font-weight: 600; text-align: center; cursor: pointer;
+}
+.btn.primary {
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+  font: 700 22px/1 var(--font-display); letter-spacing: .03em; text-transform: uppercase;
+}
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+.btn.grow { flex: 1; }
+.btn[disabled] { opacity: .5; cursor: default; }
+.bar label:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* Sheets */
+.overlay {
+  position: fixed; inset: 0; z-index: 10; background: var(--scrim);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.sheet {
+  width: 100%; max-width: 520px; max-height: 100%; overflow-y: auto;
+  background: var(--surface); border-radius: 16px 16px 0 0;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  display: grid; gap: 14px;
+}
+@media (min-width: 620px) { .overlay { align-items: center; } .sheet { border-radius: 16px; } }
+.sheet h2 { font: 700 22px/1 var(--font-display); text-transform: uppercase; margin: 0; }
+.sheet p { margin: 0; color: var(--muted); font-size: 15px; }
+.preview { width: 100%; max-height: 34vh; object-fit: contain; background: var(--bg); border-radius: 8px; }
+.field { display: grid; gap: 6px; }
+.field > span { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.big.stepper button { width: 64px; height: 64px; font-size: 34px; }
+.big .qty { flex: 1; width: auto; min-width: 0; height: 64px; font-size: 40px; }
+.text {
+  width: 100%; height: 48px; padding: 0 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+}
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.viewer { max-width: 100%; max-height: 80vh; object-fit: contain; border-radius: 8px; justify-self: center; }
+.confirm { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--danger); border-radius: var(--radius); }
+.confirm p { color: var(--ink); }
+
+.toast {
+  position: fixed; left: 16px; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); z-index: 20;
+  max-width: 480px; margin-inline: auto; padding: 12px 14px; border-radius: var(--radius);
+  background: var(--ink); color: var(--bg); font-size: 15px; text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="top">
+      <h1>Inventory Helper</h1>
+      <div class="stats" id="stats" aria-live="polite">Loading your count…</div>
+    </div>
+    <div class="tools">
+      <input class="search" id="search" type="search" placeholder="Search item names" autocomplete="off" aria-label="Search item names">
+      <button class="chip" id="unnamed" type="button" aria-pressed="false">Needs name</button>
+      <button class="chip" id="finish" type="button">Finish</button>
+    </div>
+    <div class="status" id="status">Opening saved count…</div>
+  </header>
+
+  <ul class="list" id="list"></ul>
+  <div class="empty" id="empty" hidden>
+    <h2 id="empty-h">Nothing counted yet</h2>
+    <p id="empty-p">Take a photo of the first item, type how many there are, and it lands here. Names are optional and can be added later.</p>
+  </div>
+</div>
+
+<div class="bar">
+  <div class="bar-in">
+    <label class="btn primary grow" for="cam">Take photo
+      <input class="vh" id="cam" type="file" accept="image/*" capture="environment">
+    </label>
+    <label class="btn" for="pick">From files
+      <input class="vh" id="pick" type="file" accept="image/*">
+    </label>
+  </div>
+</div>
+
+<!-- New item -->
+<div class="overlay" id="draft-ov" hidden>
+  <form class="sheet" id="draft" autocomplete="off">
+    <img class="preview" id="draft-img" alt="Photo of the item being counted">
+    <label class="field"><span>How many</span>
+      <div class="stepper big">
+        <button type="button" id="draft-dec" aria-label="One less">−</button>
+        <input class="qty" id="draft-qty" type="text" inputmode="decimal" placeholder="0" enterkeyhint="done">
+        <button type="button" id="draft-inc" aria-label="One more">+</button>
+      </div>
+    </label>
+    <label class="field"><span>Name (optional)</span>
+      <input class="text" id="draft-name" type="text" maxlength="80" placeholder="e.g. Traffic cones, 28 in">
+    </label>
+    <div class="actions">
+      <button class="btn" type="button" id="draft-cancel">Discard</button>
+      <button class="btn grow" type="submit" id="draft-save">Save</button>
+      <button class="btn primary grow" type="button" id="draft-next">Save + next photo</button>
+    </div>
+  </form>
+</div>
+
+<!-- Photo viewer -->
+<div class="overlay" id="view-ov" hidden>
+  <div class="sheet">
+    <img class="viewer" id="view-img" alt="Full-size item photo">
+    <button class="btn" type="button" id="view-close">Close</button>
+  </div>
+</div>
+
+<!-- Finish -->
+<div class="overlay" id="fin-ov" hidden>
+  <div class="sheet">
+    <h2>Finish this count</h2>
+    <p id="fin-sum"></p>
+    <div class="actions">
+      <button class="btn grow" type="button" id="fin-copy">Copy for Google Sheets</button>
+      <button class="btn grow" type="button" id="fin-csv">Download CSV</button>
+    </div>
+    <p>Copy puts the table on your clipboard. Paste it into any sheet and the columns line up.</p>
+    <button class="btn" type="button" id="fin-clear">Clear the whole count…</button>
+    <div class="confirm" id="fin-confirm" hidden>
+      <p id="fin-confirm-p"></p>
+      <div class="actions">
+        <button class="btn grow" type="button" id="fin-no">Keep it</button>
+        <button class="btn danger grow" type="button" id="fin-yes">Delete everything</button>
+      </div>
+    </div>
+    <button class="btn" type="button" id="fin-close">Close</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const listEl = $('list'), searchEl = $('search');
+  const items = new Map();   // id -> stored doc
+  const queue = {};          // id -> {patch, timer, busy}
+  let store = null;
+  let unnamedOnly = false, loaded = false, draft = null;
+
+  /* ---------- helpers ---------- */
+  const fmt = n => String(Math.round((Number(n) || 0) * 100) / 100);
+  const parseQty = s => { const n = parseFloat(String(s).replace(',', '.')); return isFinite(n) && n >= 0 ? n : null; };
+  const newId = () => 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const timeOf = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  let toastTimer;
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  }
+  function explain(e, doing) {
+    if (e && e.name === 'QuotaExceededError') return 'This device is out of storage. Export, then clear the count from Finish.';
+    return "Couldn't " + doing + '. Try again.';
+  }
+
+  /* ---------- fuzzy name search ---------- */
+  const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  function lev(a, b) {
+    if (a === b) return 0;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++)
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  function subseq(t, s) { let i = 0; for (const ch of s) if (ch === t[i]) i++; return i === t.length; }
+  function fuzzy(query, name) {
+    const whole = norm(name); if (!whole) return 0;
+    const qs = norm(query).split(' ').filter(Boolean), ws = whole.split(' ');
+    if (!qs.length) return 0;
+    let total = 0;
+    for (const t of qs) {
+      let best = whole.includes(t) ? 0.9 : 0;
+      const slack = t.length <= 2 ? 0 : t.length <= 5 ? 1 : 2;
+      for (const w of ws) {
+        if (w.startsWith(t)) { best = 1; break; }
+        const d = Math.min(lev(t, w), lev(t, w.slice(0, t.length)));
+        if (d <= slack) best = Math.max(best, 0.7 - d * 0.1);
+      }
+      if (!best && t.length >= 3 && subseq(t, whole.replace(/ /g, ''))) best = 0.3;
+      if (!best) return 0;
+      total += best;
+    }
+    return total / qs.length;
+  }
+
+  /* ---------- storage: IndexedDB in this browser, nothing leaves the device ---------- */
+  function localStore() {
+    const map = new Map(); let cb = () => {};
+    const emit = () => cb([...map.entries()].map(([id, d]) => ({ id, ...d })));
+    const open = new Promise(res => {
+      try {
+        const r = indexedDB.open('inventory-helper', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('items');
+        r.onsuccess = () => res(r.result); r.onerror = () => res(null);
+      } catch (e) { res(null); }
+    });
+    const write = async fn => {
+      const d = await open; if (!d) throw new Error('no storage');
+      return new Promise((res, rej) => {
+        const t = d.transaction('items', 'readwrite');
+        t.oncomplete = () => res(); t.onerror = t.onabort = () => rej(t.error);
+        fn(t.objectStore('items'));
+      });
+    };
+    return {
+      async sub(f) {
+        cb = f; const d = await open;
+        if (d) await new Promise(res => {
+          try {
+            const s = d.transaction('items').objectStore('items'), rk = s.getAllKeys(), rv = s.getAll();
+            rv.onsuccess = () => { rk.result.forEach((k, i) => map.set(k, rv.result[i])); res(); };
+            rv.onerror = () => res();
+          } catch (e) { res(); }
+        });
+        emit(); return !!d;
+      },
+      async set(id, d) { await write(s => s.put(d, id)); map.set(id, d); emit(); },
+      async update(id, p) { const d = { ...map.get(id), ...p }; await write(s => s.put(d, id)); map.set(id, d); emit(); },
+      async del(id) { await write(s => s.delete(id)); map.delete(id); emit(); },
+    };
+  }
+  store = localStore();
+  const ready = store.sub(docs => {
+    items.clear(); docs.forEach(d => items.set(d.id, d));
+    loaded = true; render();
+  }).then(ok => {
+    $('status').textContent = ok
+      ? 'Saved on this device, in this browser. Export before you clear it or switch devices.'
+      : "This browser is blocking storage, so nothing can be saved. Turn off private browsing and reload.";
+  });
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+  /* Debounced, one-write-at-a-time edits per item. */
+  function patch(id, p, delay = 450) {
+    const q = queue[id] || (queue[id] = { patch: {}, timer: 0, busy: false });
+    Object.assign(q.patch, p);
+    clearTimeout(q.timer); q.timer = setTimeout(() => flush(id), delay);
+    render();
+  }
+  async function flush(id) {
+    const q = queue[id]; if (!q || q.busy || !Object.keys(q.patch).length) return;
+    if (!items.has(id)) { q.patch = {}; return; }
+    const p = q.patch; q.patch = {}; q.busy = true;
+    try { await store.update(id, p); }
+    catch (e) { toast(explain(e, 'save that change')); }
+    q.busy = false;
+    if (Object.keys(q.patch).length) flush(id);
+  }
+  const view = d => (queue[d.id] ? { ...d, ...queue[d.id].patch } : d);
+
+  /* ---------- rendering ---------- */
+  function makeCard(id) {
+    const li = document.createElement('li'); li.className = 'item'; li.dataset.id = id;
+    li.innerHTML =
+      '<button class="thumb" type="button" aria-label="View photo"><img alt=""><span class="tag"></span></button>' +
+      '<input class="name" type="text" maxlength="80" placeholder="Add a name" aria-label="Item name" autocomplete="off">' +
+      '<div class="row"><div class="stepper">' +
+      '<button class="dec" type="button" aria-label="One less">−</button>' +
+      '<input class="qty" type="text" inputmode="decimal" aria-label="Quantity" enterkeyhint="done">' +
+      '<button class="inc" type="button" aria-label="One more">+</button></div>' +
+      '<span class="time"></span><button class="del" type="button">Remove</button></div>';
+    li.querySelector('.name').id = 'name-' + id;
+    li.querySelector('.qty').id = 'qty-' + id;
+    return li;
+  }
+  function fill(li, it) {
+    const img = li.querySelector('img');
+    if (li._thumb !== it.thumb) { li._thumb = it.thumb; img.src = it.thumb || ''; }
+    li.querySelector('.tag').textContent = '#' + it.n;
+    const name = li.querySelector('.name'), qty = li.querySelector('.qty');
+    if (document.activeElement !== name && name.value !== (it.name || '')) name.value = it.name || '';
+    if (document.activeElement !== qty && qty.value !== fmt(it.qty)) qty.value = fmt(it.qty);
+    li.querySelector('.time').textContent = timeOf(it.created);
+  }
+  function render() {
+    const all = [...items.values()].map(view).sort((a, b) => (a.created || 0) - (b.created || 0));
+    all.forEach((it, i) => { it.n = i + 1; });
+    const focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest('.item') : null;
+    const keep = focused ? focused.dataset.id : null;
+    const q = searchEl.value.trim();
+    let shown = all.slice().reverse();
+    if (unnamedOnly) shown = shown.filter(i => !i.name || i.id === keep);
+    if (q) shown = shown.map(i => [i.id === keep ? 2 : fuzzy(q, i.name || ''), i]).filter(x => x[0] > 0)
+      .sort((a, b) => b[0] - a[0]).map(x => x[1]);
+
+    const have = new Map([...listEl.children].map(el => [el.dataset.id, el]));
+    shown.forEach((it, i) => {
+      const el = have.get(it.id) || makeCard(it.id);
+      have.delete(it.id); fill(el, it);
+      if (listEl.children[i] !== el) listEl.insertBefore(el, listEl.children[i] || null);
+    });
+    have.forEach(el => el.remove());
+
+    const units = all.reduce((s, i) => s + (Number(i.qty) || 0), 0), blank = all.filter(i => !i.name).length;
+    $('unnamed').textContent = blank ? 'Needs name (' + blank + ')' : 'Needs name';
+    if (loaded) {
+      const s = $('stats'); s.textContent = '';
+      const b1 = document.createElement('b'), b2 = document.createElement('b');
+      b1.textContent = all.length; b2.textContent = fmt(units);
+      s.append(b1, all.length === 1 ? ' item · ' : ' items · ', b2, ' units');
+    }
+    const empty = $('empty'); empty.hidden = !loaded || shown.length > 0;
+    if (!empty.hidden) {
+      const none = all.length === 0;
+      $('empty-h').textContent = none ? 'Nothing counted yet' : q ? 'No names match "' + q + '"' : 'Every item has a name';
+      $('empty-p').textContent = none
+        ? 'Take a photo of the first item, type how many there are, and it lands here. Names are optional and can be added later.'
+        : q ? 'Search only looks at items you have named. Close spellings still match.' : 'Turn off the Needs name filter to see the full count.';
+    }
+  }
+
+  /* ---------- list interactions ---------- */
+  listEl.addEventListener('click', e => {
+    const li = e.target.closest('.item'); if (!li) return;
+    const id = li.dataset.id, it = items.get(id); if (!it) return;
+    const cur = Number(view(it).qty) || 0;
+    if (e.target.closest('.inc')) patch(id, { qty: cur + 1 });
+    else if (e.target.closest('.dec')) patch(id, { qty: Math.max(0, cur - 1) });
+    else if (e.target.closest('.thumb')) openViewer(it);
+    else if (e.target.closest('.del')) {
+      const b = e.target.closest('.del');
+      if (!b.classList.contains('armed')) {
+        b.classList.add('armed'); b.textContent = 'Tap again to remove';
+        setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Remove'; }, 3000);
+      } else removeItem(id);
+    }
+  });
+  listEl.addEventListener('input', e => {
+    const li = e.target.closest('.item'); if (!li) return;
+    if (e.target.classList.contains('name')) patch(li.dataset.id, { name: e.target.value.trim() }, 600);
+    if (e.target.classList.contains('qty')) { const n = parseQty(e.target.value); if (n !== null) patch(li.dataset.id, { qty: n }, 600); }
+  });
+  listEl.addEventListener('focusin', e => { if (e.target.classList.contains('qty')) e.target.select(); });
+  listEl.addEventListener('focusout', () => setTimeout(render, 0));
+  listEl.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('input')) e.target.blur(); });
+  searchEl.addEventListener('input', render);
+  $('unnamed').addEventListener('click', () => {
+    unnamedOnly = !unnamedOnly; $('unnamed').setAttribute('aria-pressed', String(unnamedOnly)); render();
+  });
+
+  async function removeItem(id) {
+    clearTimeout(queue[id] && queue[id].timer); delete queue[id];
+    try { await store.del(id); }
+    catch (e) { toast(explain(e, 'remove that item')); }
+  }
+
+  function openViewer(it) {
+    const img = $('view-img');
+    img.onerror = () => { img.onerror = null; img.src = it.full || it.thumb || ''; };
+    img.src = it.full || it.thumb || '';
+    $('view-ov').hidden = false;
+  }
+  $('view-close').addEventListener('click', () => { $('view-ov').hidden = true; });
+  $('view-ov').addEventListener('click', e => { if (e.target === $('view-ov')) $('view-ov').hidden = true; });
+
+  /* ---------- taking a photo ---------- */
+  async function decode(file) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {}
+    return new Promise((res, rej) => {
+      const im = new Image(), url = URL.createObjectURL(file);
+      im.onload = () => res(im); im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode')); };
+      im.src = url;
+    });
+  }
+  function shrink(src, max) {
+    const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height, r = Math.min(1, max / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * r)); c.height = Math.max(1, Math.round(h * r));
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    return c;
+  }
+  async function onPhoto(e) {
+    const file = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    try {
+      const big = shrink(await decode(file), 1024);
+      draft = { big, thumb: shrink(big, 240).toDataURL('image/jpeg', 0.7) };
+      $('draft-img').src = shrink(big, 900).toDataURL('image/jpeg', 0.8);
+      $('draft-qty').value = ''; $('draft-name').value = '';
+      $('draft-ov').hidden = false;
+      $('draft-qty').focus();
+    } catch (err) { toast("That photo couldn't be read. Try taking it again."); }
+  }
+  $('cam').addEventListener('change', onPhoto);
+  $('pick').addEventListener('change', onPhoto);
+
+  async function saveDraft() {
+    if (!draft) return;
+    const d = draft; draft = null; $('draft-ov').hidden = true;
+    const doc = {
+      name: $('draft-name').value.trim(), qty: parseQty($('draft-qty').value) || 0,
+      thumb: d.thumb, full: d.big.toDataURL('image/jpeg', 0.78), created: Date.now(),
+    };
+    try { await ready; await store.set(newId(), doc); }
+    catch (e) { toast(explain(e, 'save that item')); }
+  }
+  $('draft').addEventListener('submit',e => { e.preventDefault(); saveDraft(); });
+  $('draft-next').addEventListener('click', () => { saveDraft(); $('cam').click(); });
+  $('draft-cancel').addEventListener('click', () => { draft = null; $('draft-ov').hidden = true; });
+  const bump = n => { const q = $('draft-qty'); q.value = fmt(Math.max(0, (parseQty(q.value) || 0) + n)); };
+  $('draft-inc').addEventListener('click', () => bump(1));
+  $('draft-dec').addEventListener('click', () => bump(-1));
+
+  /* ---------- finish: export and clear ---------- */
+  function rows() {
+    const all = [...items.values()].map(view).sort((a, b) => (a.created || 0) - (b.created || 0));
+    return [['#', 'Name', 'Qty', 'Counted at']].concat(
+      all.map((it, i) => [i + 1, it.name || '', fmt(it.qty), it.created ? new Date(it.created).toLocaleString() : '']));
+  }
+  const stamp = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); };
+  $('finish').addEventListener('click', () => {
+    const n = items.size;
+    $('fin-sum').textContent = n ? n + (n === 1 ? ' item' : ' items') + ' in this count. Export it before you clear it.' : 'Nothing has been counted yet.';
+    $('fin-confirm').hidden = true; $('fin-clear').hidden = n === 0;
+    $('fin-copy').disabled = n === 0; $('fin-csv').disabled = n === 0;
+    $('fin-ov').hidden = false;
+  });
+  $('fin-close').addEventListener('click', () => { $('fin-ov').hidden = true; });
+  $('fin-ov').addEventListener('click', e => { if (e.target === $('fin-ov')) $('fin-ov').hidden = true; });
+  $('fin-copy').addEventListener('click', () => {
+    const tsv = rows().map(r => r.map(c => String(c).replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
+    navigator.clipboard.writeText(tsv).then(
+      () => toast('Copied. Paste it into Google Sheets.'),
+      () => toast('Copying was blocked. Use Download CSV instead.'));
+  });
+  $('fin-csv').addEventListener('click', () => {
+    const csv = rows().map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }));
+    a.download = 'inventory-count-' + stamp() + '.csv';
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  });
+  $('fin-clear').addEventListener('click',() => {
+    $('fin-confirm-p').textContent = 'Delete all ' + items.size + ' photos and counts from this device? This cannot be undone.';
+    $('fin-confirm').hidden = false;
+  });
+  $('fin-no').addEventListener('click', () => { $('fin-confirm').hidden = true; });
+  $('fin-yes').addEventListener('click', async () => {
+    const btn = $('fin-yes'), list = [...items.values()]; btn.disabled = true;
+    let failed = 0;
+    for (let i = 0; i < list.length; i += 4) {
+      btn.textContent = 'Deleting ' + Math.min(i + 4, list.length) + ' of ' + list.length + '…';
+      await Promise.all(list.slice(i, i + 4).map(async it => {
+        clearTimeout(queue[it.id] && queue[it.id].timer); delete queue[it.id];
+        try { await store.del(it.id); }
+        catch (e) { failed++; }
+      }));
+    }
+    btn.disabled = false; btn.textContent = 'Delete everything';
+    $('fin-ov').hidden = true;
+    toast(failed ? failed + " items couldn't be deleted. Try clearing again." : 'Count cleared.');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
