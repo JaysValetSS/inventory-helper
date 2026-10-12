@@ -16,7 +16,7 @@ Live page: https://jaysvaletss.github.io/inventory-helper/
    permission prompts.
 5. **Deploy > New deployment > Web app**. Execute as **Me**, who has access **Anyone**. Copy
    the web app URL (it ends in `/exec`).
-6. Put that URL in `API_URL` at the top of the script in `index.html` and push.
+6. Put that URL in `API_URL` at the top of the script in `index.html` and push. (Done for the current sheet.)
 
 After changing `Code.gs` later, use **Deploy > Manage deployments > Edit > New version** so
 the URL stays the same.
